@@ -1,0 +1,235 @@
+---
+title: "Final Project Data Analysis and Linear Model"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=80),tidy=TRUE)
+
+library(tidyverse)
+library(ggplot2)
+library(faraway)
+```
+
+*By Muhammad Areeb and Elizabeth Grace Hiebert*
+
+## Data Analysis:
+
+The dataset contains basketball NBA statistics for players that have a a higher EFF value. The dataset contains information such as their in-game stats, points, rebounds, assists, blocks, field goal percentage, etc. There are two categorical variables, one of which is a response/target variable for our model, `CHANGED_FRANCHISE` and the other one is `SEASON_ID`.
+
+#### Trends: 
+
+Basic Statistical Overview:
+
+```{r}
+df <- read.csv('./train.csv')%>% mutate(CHANGED_FRANCHISE = factor(CHANGED_FRANCHISE))
+head(df, 10)
+```
+
+```{r}
+print(summary(df)) 
+```
+
+It can be observed from the code above, that there are two categorical variables: `CHANGED_FRANCHISE` and `SEASON_ID`
+
+Correlation Analysis:
+
+```{r}
+cor_matrix <- df %>% 
+  select(where(is.numeric)) %>% 
+  cor(use = "complete.obs")
+print(cor_matrix)
+```
+
+Looking at the large blob above, there seems to be a very high correlation (often times $\approx$ 0.9) among variables that represent similar or related stats such as `c('FGM', 'FG_PCT', 'FG3M')` that represent different 'Field Goal' metrics.
+
+#### Visualization:
+
+```{r}
+box_plot <- ggplot(df, aes(x = CHANGED_FRANCHISE, y = EFF, fill = CHANGED_FRANCHISE)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("skyblue", "salmon")) +
+  labs(title = "EFF by Franchise Change Status",
+       x = "Changed Franchise (0=No, 1=Yes)",
+       y = "EFF") +
+  theme_minimal()
+print(box_plot)
+```
+
+There are statistically significant outliers as the EFF increases for both Categories (`CHANGED_FRANCHISE`: True or False)
+
+```{r}
+table(df$CHANGED_FRANCHISE)
+barplot(table(df$CHANGED_FRANCHISE),
+        names.arg = c("Stayed", "Changed"), col = "lightblue", 
+        main = "Distribution of Franchise Changes")
+
+```
+```{r}
+hist(df$PTS, main = "Distribution of Points per Game", xlab = "Points")
+hist(df$EFF, main = "Player Efficiency Distribution", xlab = "EFF")
+```
+
+
+
+#### Understanding Outliers:
+```{r}
+numeric_cols <- c("EFF")
+z_scores <- df %>% 
+  select(all_of(numeric_cols)) %>% 
+  scale() %>% 
+  abs()
+
+outliers <- z_scores > 3
+df_outliers <- df %>% 
+  filter(rowSums(outliers) > 0) %>% 
+  select(PLAYER, all_of(numeric_cols))
+
+print(df_outliers)
+```
+
+Looking at the list of outliers based on `EFF` values, it can be said that the list boils down to some of the more popular household names in basketball.
+
+```{r}
+pts_iqr <- df %>% 
+  summarise(
+    Q1 = quantile(PTS, 0.25, na.rm = TRUE),
+    Q3 = quantile(PTS, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1
+  )
+
+pts_outliers <- df %>% 
+  filter(PTS < (pts_iqr$Q1 - 1.5 * pts_iqr$IQR) | 
+           PTS > (pts_iqr$Q3 + 1.5 * pts_iqr$IQR))
+
+
+outlier_plot <- ggplot(df, aes(x = PTS, y = REB)) +
+  geom_point(aes(color = CHANGED_FRANCHISE, shape = rowSums(outliers) > 0), size = 3) +
+  scale_color_manual(values = c("skyblue", "salmon")) +
+  scale_shape_manual(values = c(16, 8)) +
+  labs(title = "Outlier Detection in Points-Rebounds Relationship",
+       x = "Points",
+       y = "Rebounds") +
+  theme_minimal()
+print(outlier_plot)
+```
+
+
+
+## Model Creation:
+
+### Logistic Regression Model:
+
+The model aims to predict `CHANGED_FRANCHISE`, a categorical variable of boolean type based on all of the other relavent parameters.
+
+We decided to use a logistic regression because our response variable is binomial, a player changes franchise or does not change franchise.
+
+```{r}
+# Selecting desired columns.
+cols_list <- c('RANK', 'TEAM_ID', 'GP', 'MIN', 'FGM', 'FG_PCT', 'FG3M', 'FG3A', 
+               'FG3_PCT', 'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB', 'AST', 
+               'STL', 'BLK', 'TOV', 'PF', 'PTS', 'EFF', 'AST_TOV', 'STL_TOV', 
+               'CHANGED_FRANCHISE', 'SEASON_ID')
+df <- df[, cols_list]
+#head(train_df, 10)
+
+# Convert to factor.
+df$CHANGED_FRANCHISE <- as.factor(df$CHANGED_FRANCHISE)
+df$SEASON_ID <- as.factor(df$SEASON_ID)
+
+#Logistic regression model
+logit_mod <- glm(CHANGED_FRANCHISE ~ ., family=binomial(link='logit'), data = df)
+```
+```{r}
+summary(logit_mod)
+```
+
+#### Diagnostics For Logistic Regression:
+
+```{r, out.width="80%", fig.align = "left"}
+df <- mutate(df,residuals = residuals(logit_mod),linpred = predict(logit_mod))
+
+gdf <- group_by(df,bin = cut(linpred, breaks = unique(quantile(linpred, (1:100)/101))))
+
+diagdf <- summarise(gdf, residuals = mean(residuals), linpred = mean(linpred))
+plot(residuals ~ linpred, diagdf, xlab = "linear predictor")
+```
+
+The values seem to cluster up close to zero, and this breaks our constant variance assumption.
+Because there is not a random scatter in our fitted versus residual plot, we can say that this model does not meet our assumption of linearity.
+
+```{r}
+#Half norm plot
+library(faraway)
+halfnorm(hatvalues(logit_mod))
+```
+
+From the half norm plot, we can see that there are only two outliers.
+The plot seems to look similar to a sigmoid function, which is expected since the model is logistic regression.
+
+#### Model Comparison:
+
+```{r}
+#Smaller model from ommitting non significant predictors
+columns <- c('RANK', 'TEAM_ID', 'FG3M', 'FG3A', 'DREB', 'BLK', 'EFF', 'AST_TOV', 'CHANGED_FRANCHISE')
+new_train <- df[, columns]
+
+new_train$CHANGED_FRANCHISE <- as.factor(new_train$CHANGED_FRANCHISE)
+
+logit_mod_reduced <- glm(CHANGED_FRANCHISE ~ ., family=binomial(link='logit'), data = new_train)
+#Summary of new log mod
+summary(logit_mod_reduced)
+```
+```{r}
+#Compare the reduced vs full models
+anova(logit_mod_reduced, logit_mod, test = "Chisq")
+```
+
+The p-value is 2.2e-16 which is extremely small. This means that the additional predictors in Model 2(the full model) significantly improve the fit of the model and help explain the response variable(changed franchise).
+
+#### Hypothesis Test
+
+Null Hypothesis($H_0$): The reduced model(Model 1) fits just as well as the full model(Model 2) and the additional predictors in the full model do not improve the model.
+
+Alternative Hypothesis($H_1$): The full model(Model 2) is better fit than the reduced model(Model 1).
+alpha = 0.05
+
+D = $Deviance_{Model1}$ - $Deviance_{Model2}$ = 16681 - 16225 = 456.43
+
+D = 456.43
+
+df = 42
+
+p-value = 2.2e-16
+
+**Conclusion:**
+
+Since the p-value is extremely small, we reject the null hypothesis. This indicates that the full model offers a significantly improved fit over the reduced model, and the additional predictors included in the full model are meaningful in explaining the response variable.
+
+#### Confidence Interval:
+
+```{r}
+ci <- confint.default(logit_mod) # default 95% CI based on standard error.
+print(ci)
+```
+
+A coefficient is statistically significant if its confidence interval doesn't include 0, and if it does than it is not statistically significant.
+
+This happens because including 0 means that there is a plausible chance that the true effect is zero i.e., no effect.
+
+List of Significant Parameters:
+
+```{r}
+has_zero <- ci[, 1] <0 & ci[, 2] >0
+significant_params <- rownames(ci)[!has_zero]
+significant_params
+```
+
+List of Insignificant Parameters:
+```{r}
+insignificant_params <- rownames(ci)[has_zero]
+insignificant_params
+```
